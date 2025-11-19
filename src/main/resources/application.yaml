@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: incidentiq
+
+  ai:
+    openai:
+      api-key: ${API_KEY}
+      chat:
+        base-url: https://generativelanguage.googleapis.com/v1beta/openai
+        completions-path: /chat/completions
+        options:
+          model: gemini-2.5-pro
+      embedding:
+        base-url: https://generativelanguage.googleapis.com/v1beta/models
+        path: embedding-001:embedContent
+        options:
+          model: embedding-001
+  data:
+    redis:
+      port: 6379
+      host: localhost
+app:
+  redis:
+    index-name: idx:logs
+    prefix: "emb:"
