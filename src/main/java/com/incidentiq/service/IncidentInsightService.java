@@ -1,99 +1,127 @@
 package com.incidentiq.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.incidentiq.model.RootCauseInsight;
+import com.incidentiq.model.RootCauseInsight.EvidenceHit;
+import com.incidentiq.model.SearchHit;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
+@Slf4j
 public class IncidentInsightService {
 
-    private final SearchService searchService;
-    private final GeminiChatClient chatClient;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final SearchService semanticSearchService;
+    private final GeminiChatClient geminiChatClient;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public IncidentInsightService(SearchService searchService, GeminiChatClient chatClient) {
-        this.searchService = searchService;
-        this.chatClient = chatClient;
+    public RootCauseInsight analyzeRootCause(String query, int topK) {
+
+        // 1) Evidence collection
+        List<SearchHit> hits = semanticSearchService.hybridSearch(query, topK);
+
+        List<EvidenceHit> evidence = hits.stream()
+                .map(h -> EvidenceHit.builder()
+                        .id(h.getId())
+                        .text(h.getText())
+                        .meta(h.getMeta())
+                        .score(h.getScore())
+                        .build())
+                .collect(Collectors.toList());
+
+        String context = evidence.stream()
+                .map(e -> "### Evidence (score=" + e.getScore() + ")\n" + e.getText())
+                .collect(Collectors.joining("\n\n"));
+
+        // 2) Prompt
+        String prompt = """
+                You are an expert SRE / DevOps AI assistant.
+
+                User Query:
+                %s
+
+                Evidence Logs:
+                %s
+
+                Provide a STRICT JSON response ONLY:
+                {
+                  "summary": "...",
+                  "root_cause": "...",
+                  "impact": "...",
+                  "actions": "...",
+                  "confidence": "HIGH/MEDIUM/LOW"
+                }
+
+                DO NOT wrap the response in ```json blocks.
+                """.formatted(query, context);
+
+        // 3) Call Gemini
+        String raw;
+        try {
+            raw = geminiChatClient.chat(prompt);
+        } catch (Exception ex) {
+            log.error("AI root cause analysis failed for query='{}'", query, ex);
+            throw new RuntimeException("AI Analysis failed: " + ex.getMessage());
+        }
+
+        // 4) Clean + Parse LLM JSON
+        JsonNode json = safeJson(raw);
+
+        String summary = safeField(json, "summary");
+        String root = safeField(json, "root_cause");
+        String impact = safeField(json, "impact");
+        String actions = safeField(json, "actions");
+        String confidence = safeField(json, "confidence");
+
+        // 5) Build response
+        return RootCauseInsight.builder()
+                .query(query)
+                .rootCauseSummary(summary)
+                .probableRootCause(root)
+                .impact(impact)
+                .recommendedActions(actions)
+                .confidenceLevel(confidence)
+                .rawAnalysis(raw)
+                .evidence(evidence)
+                .build();
     }
 
-    public Map<String, Object> generateInsight(String query) throws Exception {
-
-        // ------------------------------------
-        // 1) SEMANTIC SEARCH
-        // ------------------------------------
-        List<VectorStoreService.SearchResult> results =
-                searchService.search(query, 5);
-
-        // Build context from similar logs
-        StringBuilder ctx = new StringBuilder();
-        for (var r : results) {
-            ctx.append("- ").append(r.text()).append("\n");
-        }
-
-        // ------------------------------------
-        // 2) STRICT JSON PROMPT
-        // ------------------------------------
-        String prompt = """
-                You are a Senior SRE. Your job is to do RCA from logs.
-
-                ---- LOGS ----
-                %s
-
-                ---- USER QUERY ----
-                %s
-
-                You MUST reply ONLY in JSON.
-                NO markdown, NO explanation, NO text outside JSON.
-                If you cannot determine a field, set it to null.
-
-                JSON FORMAT:
-                {
-                  "rootCause": "...",
-                  "impact": "...",
-                  "recommendation": "...",
-                  "confidence": 0.0,
-                  "summary": "..."
-                }
-                """.formatted(ctx.toString(), query);
-
-        // ------------------------------------
-        // 3) CALL GEMINI
-        // ------------------------------------
-        String llmOutput = chatClient.chat(prompt);
-
-        // Remove any accidental formatting
-        llmOutput = llmOutput
-                .replace("```json", "")
-                .replace("```", "")
-                .trim();
-
-        // ------------------------------------
-        // 4) PARSE JSON SAFELY
-        // ------------------------------------
-        Map<String, Object> parsed;
-
+    /**
+     * Removes Markdown fences (```json ... ```) before JSON parsing.
+     */
+    private JsonNode safeJson(String str) {
         try {
-            parsed = mapper.readValue(llmOutput, Map.class);
+            String cleaned = str
+                    .replaceAll("```json", "")
+                    .replaceAll("```", "")
+                    .trim();
 
-        } catch (Exception ex) {
-            // Hard fallback: pack entire raw output in a JSON-safe response
-            parsed = new HashMap<>();
-            parsed.put("summary", "Model did not return valid JSON.");
-            parsed.put("rootCause", "Gemini returned unexpected format.");
-            parsed.put("impact", "Unknown");
-            parsed.put("recommendation", "Retry with clearer logs.");
-            parsed.put("confidence", 0.0);
-            parsed.put("rawResponse", llmOutput); // helpful for debugging
+            log.info("Cleaned AI JSON: {}", cleaned);
+
+            return objectMapper.readTree(cleaned);
+        } catch (Exception e) {
+            log.warn("AI returned invalid JSON. Raw returned string: {}", str);
+            return objectMapper.createObjectNode();
         }
+    }
 
-        // ------------------------------------
-        // 5) FINAL OUTPUT
-        // ------------------------------------
-        Map<String, Object> output = new HashMap<>();
-        output.put("relatedLogs", results);
-        output.put("analysis", parsed);
-
-        return output;
+    /**
+     * Safely extracts field from JSON without crashing.
+     */
+    private String safeField(JsonNode json, String field) {
+        try {
+            if (json.has(field)) {
+                return json.get(field).asText();
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

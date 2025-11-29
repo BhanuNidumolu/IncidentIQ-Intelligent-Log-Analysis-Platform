@@ -1,34 +1,38 @@
 package com.incidentiq.service;
 
+import com.incidentiq.model.SearchHit;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class SearchService {
 
-    private final EmbeddingService embeddingService;
-    private final VectorStoreService vectorStoreService;
-    private final RediSearchKnnService rediSearchKnnService;
+    private final RediSearchKnnService redi;
 
-    public SearchService(EmbeddingService embeddingService,
-                         VectorStoreService vectorStoreService,
-                         RediSearchKnnService rediSearchKnnService) {
-        this.embeddingService = embeddingService;
-        this.vectorStoreService = vectorStoreService;
-        this.rediSearchKnnService = rediSearchKnnService;
+    public List<SearchHit> semanticSearch(String query, int topK) {
+        return redi.knnSearch(query, topK);
     }
 
-    public List<VectorStoreService.SearchResult> search(String query, int k) {
-        if (query == null || query.isBlank()) return Collections.emptyList();
-        float[] emb = embeddingService.getEmbedding(query);
-        try {
-            List<VectorStoreService.SearchResult> server = rediSearchKnnService.searchKnnServerSide(emb, k);
-            if (server != null && !server.isEmpty()) return server;
-        } catch (Exception e) {
-            System.err.println("[SearchService] RediSearch failed: " + e.getMessage());
+    public List<SearchHit> hybridSearch(String query, int topK) {
+
+        String terms = Arrays.stream(query.split("\\s+"))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .map(String::toLowerCase)
+                .distinct()
+                .collect(Collectors.joining("|"));
+
+        if (terms.isEmpty()) {
+            return semanticSearch(query, topK);
         }
-        return vectorStoreService.searchKnn(emb, k);
+
+        String filter = "@text:(" + terms + ")";
+
+        return redi.hybridKnnSearch(query, filter, topK);
     }
 }

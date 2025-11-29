@@ -17,14 +17,11 @@ public class JobController {
         this.ingestionService = ingestionService;
     }
 
-    /**
-     * POST /jobs/ingestText
-     * Body: plain text
-     * Optional: fileName (defaults to "inline")
-     */
     @PostMapping(value = "/ingestText", consumes = MediaType.TEXT_PLAIN_VALUE)
-    public Map<String, Object> ingestText(@RequestBody String text,
-                                          @RequestParam(defaultValue = "inline") String fileName) {
+    public Map<String, Object> ingestText(
+            @RequestBody String text,
+            @RequestParam(name = "fileName", defaultValue = "inline") String fileName
+    ) {
 
         IngestionJob job = ingestionService.createAndStartJobFromText(
                 "text",
@@ -39,9 +36,6 @@ public class JobController {
         );
     }
 
-    /**
-     * GET /jobs/{jobId}
-     */
     @GetMapping("/{jobId}")
     public Map<String, Object> getJob(@PathVariable String jobId) {
         IngestionJob job = ingestionService.getJob(jobId);
@@ -59,7 +53,7 @@ public class JobController {
                 "status", job.getStatus(),
                 "processedChunks", job.getProcessedChunks(),
                 "totalChunks", job.getTotalChunks(),
-                "message", job.getMessage()
+                "message", job.getMessage() == null ? "" : job.getMessage()
         );
     }
 }

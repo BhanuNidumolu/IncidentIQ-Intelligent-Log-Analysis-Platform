@@ -1,7 +1,7 @@
 package com.incidentiq.controller;
 
+import com.incidentiq.model.SearchHit;
 import com.incidentiq.service.SearchService;
-import com.incidentiq.service.VectorStoreService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -16,10 +16,19 @@ public class SearchController {
         this.searchService = searchService;
     }
 
-    @GetMapping
-    public List<VectorStoreService.SearchResult> search(
+    @GetMapping("/semantic")
+    public List<SearchHit> semantic(
             @RequestParam String query,
-            @RequestParam(defaultValue = "5") int k) {
-        return searchService.search(query, k);
+            @RequestParam(defaultValue = "3") int k
+    ) {
+        return searchService.semanticSearch(query, k);
+    }
+
+    @GetMapping("/hybrid")
+    public List<SearchHit> hybrid(
+            @RequestParam String query,
+            @RequestParam(defaultValue = "3") int k
+    ) {
+        return searchService.hybridSearch(query, k);
     }
 }

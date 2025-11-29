@@ -13,7 +13,7 @@ import java.util.Map;
 @Component
 public class GeminiEmbeddingClient {
 
-    @Value("${spring.ai.openai.api-key}")
+    @Value("${GEMINI_API_KEY}")
     private String apiKey;
 
     private static final String EMBED_URL =
@@ -23,7 +23,6 @@ public class GeminiEmbeddingClient {
 
         RestTemplate rest = new RestTemplate();
 
-        // ✔ CORRECT Google Gemini embedContent format
         Map<String, Object> body = Map.of(
                 "content", Map.of(
                         "parts", List.of(
@@ -39,11 +38,13 @@ public class GeminiEmbeddingClient {
 
         String url = EMBED_URL.formatted(apiKey);
 
-        // Execute API call
-        Map resp = rest.postForObject(url, req, Map.class);
+        Map<?, ?> resp = rest.postForObject(url, req, Map.class);
+        if (resp == null || !resp.containsKey("embedding")) {
+            throw new IllegalStateException("Invalid embedding response from Gemini");
+        }
 
-        // Response → { "embedding": { "values": [...] } }
-        Map embedding = (Map) resp.get("embedding");
+        Map<?, ?> embedding = (Map<?, ?>) resp.get("embedding");
+        @SuppressWarnings("unchecked")
         List<Double> values = (List<Double>) embedding.get("values");
 
         float[] out = new float[values.size()];
@@ -61,6 +62,6 @@ public class GeminiEmbeddingClient {
     }
 
     public int getConfiguredDim() {
-        return 768; // gemini-embedding-001 output size
+        return 3072; // gemini-embedding-001 output size
     }
 }

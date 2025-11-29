@@ -1,60 +1,59 @@
 package com.incidentiq.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.incidentiq.model.LogChunk;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import redis.clients.jedis.JedisPooled;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * Simple chunker: splits by newline and groups lines to create
- * ~500-900 char chunks, suitable for embedding.
- */
 @Service
+@RequiredArgsConstructor
+@Slf4j
 public class LogChunkService {
 
-    // target chunk size
-    private static final int MAX_CHUNK_SIZE = 900;
-    private static final int MIN_CHUNK_SIZE = 300;
+    private final JedisPooled jedis;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    private static final String QUEUE_KEY = "ingest_queue";
 
     public List<LogChunk> chunk(String source, String fileName, String text) {
-        List<LogChunk> out = new ArrayList<>();
-        if (text == null || text.isBlank()) return out;
-
-        String[] lines = text.split("\\r?\\n");
-        StringBuilder current = new StringBuilder();
-
-        int chunkNo = 0;
-
-        for (String line : lines) {
-
-            // If adding this line makes chunk large → flush
-            if (current.length() >= MIN_CHUNK_SIZE &&
-                    current.length() + line.length() > MAX_CHUNK_SIZE) {
-
-                out.add(makeChunk(current.toString(), source, fileName, chunkNo++));
-                current = new StringBuilder();
-            }
-
-            current.append(line).append("\n");
-        }
-
-        // leftover
-        if (current.length() > 0) {
-            out.add(makeChunk(current.toString(), source, fileName, chunkNo));
-        }
-
-        return out;
-    }
-
-    private LogChunk makeChunk(String txt, String source, String fileName, int no) {
         LogChunk c = new LogChunk();
         c.setId(UUID.randomUUID().toString());
-        c.setText(txt);
         c.setSource(source);
         c.setFileName(fileName);
-        c.setChunkNo(no);
-        return c;
+        c.setChunkNo(0);
+        c.setText(text);
+
+        log.info("Chunk created: {} for source={} fileName={}", c.getId(), source, fileName);
+        return List.of(c);
+    }
+
+    public void enqueue(LogChunk chunk) {
+        try {
+            String json = mapper.writeValueAsString(chunk);
+            Long size = jedis.lpush(QUEUE_KEY, json);
+            log.info("Enqueued chunk {} => queue size {}", chunk.getId(), size);
+        } catch (Exception e) {
+            log.error("Failed to enqueue chunk {}", chunk.getId(), e);
+            throw new IllegalStateException("Failed to enqueue", e);
+        }
+    }
+
+    public LogChunk dequeue() {
+        try {
+            var result = jedis.brpop(1, QUEUE_KEY);
+            if (result == null || result.size() < 2) {
+                return null;
+            }
+            String json = result.get(1);
+            return mapper.readValue(json, LogChunk.class);
+        } catch (Exception e) {
+            log.error("Failed to dequeue chunk", e);
+            return null;
+        }
     }
 }

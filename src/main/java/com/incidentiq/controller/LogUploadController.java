@@ -26,10 +26,6 @@ public class LogUploadController {
         this.ingestionService = ingestionService;
     }
 
-    /**
-     * MULTIPART FILE UPLOAD (ASYNC INGESTION)
-     * Uses background ingestion pipeline.
-     */
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Map<String, String> uploadFile(@RequestPart("file") MultipartFile file) throws Exception {
         StringBuilder sb = new StringBuilder();
@@ -56,10 +52,6 @@ public class LogUploadController {
         );
     }
 
-
-    /**
-     * INLINE TEXT INGESTION (ASYNC)
-     */
     @PostMapping(value = "/uploadTextAsync", consumes = MediaType.TEXT_PLAIN_VALUE)
     public Map<String, String> uploadTextAsync(@RequestBody String text) {
 
@@ -75,11 +67,6 @@ public class LogUploadController {
         );
     }
 
-
-    /**
-     * INLINE TEXT (SYNCHRONOUS)
-     * Only for testing – not used in real ingestion.
-     */
     @PostMapping(value = "/uploadText", consumes = MediaType.TEXT_PLAIN_VALUE)
     public String uploadTextSync(@RequestBody String text) {
         List<LogChunk> chunks = chunkService.chunk("text", "inline", text);

@@ -2,7 +2,8 @@ package com.incidentiq.service;
 
 import com.incidentiq.model.IngestionJob;
 import com.incidentiq.model.LogChunk;
-import org.springframework.beans.factory.annotation.Value;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import redis.clients.jedis.JedisPooled;
 
@@ -14,37 +15,24 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * Creates ingestion jobs and persists job state in Redis (HASH).
- */
 @Service
+@RequiredArgsConstructor
+@Slf4j
 public class IngestionService {
 
     private final LogChunkService chunkService;
-    private final EmbeddingService embeddingService;
-    private final VectorStoreService vectorStoreService;
     private final JedisPooled jedis;
+
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
     private final ConcurrentHashMap<String, IngestionJob> jobs = new ConcurrentHashMap<>();
-    private static final String JOB_KEY_PREFIX = "job:";
 
-    public IngestionService(
-            LogChunkService chunkService,
-            EmbeddingService embeddingService,
-            VectorStoreService vectorStoreService,
-            @Value("${spring.data.redis.host:localhost}") String host,
-            @Value("${spring.data.redis.port:6379}") int port
-    ) {
-        this.chunkService = chunkService;
-        this.embeddingService = embeddingService;
-        this.vectorStoreService = vectorStoreService;
-        this.jedis = new JedisPooled(host, port);
-    }
+    private static final String JOB_KEY_PREFIX = "job:";
 
     public IngestionJob createAndStartJobFromText(String source, String fileName, String text) {
         IngestionJob job = IngestionJob.newJob();
         jobs.put(job.getId(), job);
         persistJob(job);
+
         executor.submit(() -> runIngestion(job.getId(), source, fileName, text));
         return job;
     }
@@ -56,19 +44,22 @@ public class IngestionService {
         map.put("status", job.getStatus());
         map.put("message", job.getMessage() == null ? "" : job.getMessage());
         map.put("createdAt", job.getCreatedAt() == null ? Instant.now().toString() : job.getCreatedAt().toString());
+        map.put("finishedAt", job.getFinishedAt() == null ? "" : job.getFinishedAt().toString());
         map.put("processedChunks", String.valueOf(job.getProcessedChunks()));
         map.put("totalChunks", String.valueOf(job.getTotalChunks()));
         jedis.hset(key, map);
-        // expire job metadata after 7 days
         jedis.expire(key, 60 * 60 * 24 * 7);
     }
 
     private void updateJobStatus(String jobId, String status, String message) {
         IngestionJob job = jobs.get(jobId);
         if (job == null) return;
+
         job.setStatus(status);
         job.setMessage(message);
-        if ("SUCCESS".equals(status) || "FAILED".equals(status)) job.setFinishedAt(Instant.now());
+        if ("SUCCESS".equals(status) || "FAILED".equals(status)) {
+            job.setFinishedAt(Instant.now());
+        }
         persistJob(job);
     }
 
@@ -77,35 +68,50 @@ public class IngestionService {
         try {
             List<LogChunk> chunks = chunkService.chunk(source, fileName, text);
             IngestionJob job = jobs.get(jobId);
-            if (job != null) { job.setTotalChunks(chunks.size()); persistJob(job); }
-            int processed = 0;
-            for (int i = 0; i < chunks.size(); i++) {
-                LogChunk c = chunks.get(i);
-                float[] emb = embeddingService.getEmbedding(c.getText());
-                Map<String,Object> meta = new HashMap<>();
-                meta.put("jobId", jobId);
-                meta.put("chunkNo", c.getChunkNo());
-                meta.put("source", source);
-                meta.put("fileName", fileName);
-                meta.put("createdAt", Instant.now().toString());
-                vectorStoreService.upsert(c.getId(), emb, c.getText(), meta);
-                processed++;
-                if (job != null) {
-                    job.setProcessedChunks(processed);
-                    if (processed % 10 == 0 || processed == chunks.size()) persistJob(job);
-                }
+            if (job != null) {
+                job.setTotalChunks(chunks.size());
+                persistJob(job);
             }
-            updateJobStatus(jobId, "SUCCESS", "Stored " + processed + " chunks");
+
+            for (LogChunk c : chunks) {
+                c.setJobId(jobId);
+                chunkService.enqueue(c);
+            }
+
         } catch (Exception e) {
+            log.error("Ingestion failed for job {}", jobId, e);
             updateJobStatus(jobId, "FAILED", e.getMessage());
         }
+    }
+
+    public void incrementProcessedChunks(String jobId) {
+        IngestionJob job = jobs.get(jobId);
+        if (job == null) {
+            job = getJob(jobId);
+            if (job == null) return;
+        }
+
+        job.setProcessedChunks(job.getProcessedChunks() + 1);
+
+        if (job.getTotalChunks() > 0 &&
+                job.getProcessedChunks() >= job.getTotalChunks() &&
+                !"FAILED".equals(job.getStatus())) {
+
+            job.setStatus("SUCCESS");
+            job.setFinishedAt(Instant.now());
+        }
+
+        jobs.put(job.getId(), job);
+        persistJob(job);
     }
 
     public IngestionJob getJob(String id) {
         IngestionJob j = jobs.get(id);
         if (j != null) return j;
+
         String key = JOB_KEY_PREFIX + id;
         if (!jedis.exists(key)) return null;
+
         Map<String, String> map = jedis.hgetAll(key);
         IngestionJob job = new IngestionJob();
         job.setId(map.getOrDefault("id", id));

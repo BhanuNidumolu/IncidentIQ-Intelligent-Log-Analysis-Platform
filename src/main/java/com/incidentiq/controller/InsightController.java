@@ -1,23 +1,32 @@
 package com.incidentiq.controller;
 
+import com.incidentiq.model.RootCauseInsight;
 import com.incidentiq.service.IncidentInsightService;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
-
 @RestController
-@RequestMapping("/insight")
+@RequestMapping("/insights")
+@RequiredArgsConstructor
 public class InsightController {
 
-    private final IncidentInsightService insightService;
+    private final IncidentInsightService incidentInsightService;
 
-    public InsightController(IncidentInsightService insightService) {
-        this.insightService = insightService;
+    @GetMapping("/ping")
+    public String ping() {
+        return "IncidentIQ Insights API is up";
     }
 
-    @PostMapping
-    public Object analyze(@RequestBody Map<String, String> body) throws Exception {
-        String query = body.get("query");
-        return insightService.generateInsight(query);
+    @PostMapping("/root-cause")
+    public RootCauseInsight getRootCause(@RequestBody RootCauseRequest request) {
+        int topK = request.getTopK() != null ? request.getTopK() : 5;
+        return incidentInsightService.analyzeRootCause(request.getQuery(), topK);
+    }
+
+    @Data
+    public static class RootCauseRequest {
+        private String query;
+        private Integer topK;
     }
 }

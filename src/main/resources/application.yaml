@@ -1,25 +1,32 @@
+server:
+  port: 8080
+
 spring:
-  application:
-    name: incidentiq
+  data:
+    redis:
+      host: localhost
+      port: 6379
 
   ai:
     openai:
-      api-key: ${API_KEY}
+      # Gemini is used via OpenAI-compatible Spring AI OpenAI client
+      api-key: ${GEMINI_API_KEY}
+      base-url: "https://generativelanguage.googleapis.com/v1beta/openai"
       chat:
-        base-url: https://generativelanguage.googleapis.com/v1beta/openai
-        completions-path: /chat/completions
+        completions-path: "/chat/completions"
         options:
-          model: gemini-2.5-pro
-      embedding:
-        base-url: https://generativelanguage.googleapis.com/v1beta/models
-        path: embedding-001:embedContent
-        options:
-          model: embedding-001
-  data:
-    redis:
-      port: 6379
-      host: localhost
+          model: "gemini-2.5-pro"
+
 app:
   redis:
-    index-name: idx:logs
     prefix: "emb:"
+    index-name: "idx:logs"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always
